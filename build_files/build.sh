@@ -29,4 +29,4 @@ systemctl enable podman.socket keyd.service
 
 ## Keyd
 mkdir -p /etc/keyd
-cp etc/keyd/default.conf /etc/keyd/keyd.conf
+cp /ctx/etc/keyd/default.conf /etc/keyd/keyd.conf
