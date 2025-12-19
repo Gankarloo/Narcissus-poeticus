@@ -20,13 +20,64 @@ env:
   IMAGE_NAME: "${{ github.event.repository.name }}"  # output image name, usually same as repo name
   IMAGE_REGISTRY: "ghcr.io/${{ github.repository_owner }}"  # do not edit
   DEFAULT_TAG: "latest"
+  BASE_IMAGE: ghcr.io/ublue-os/bluefin-dx-nvidia-open
+  BASE_TAG: latest  # or whatever tag you're using
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref || github.run_id }}-${{ inputs.brand_name}}-${{ inputs.stream_name }}
   cancel-in-progress: true
 
 jobs:
+  check-base-image:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+    steps:
+      - name: Check if base image was updated
+        id: check
+        run: |
+          # For non-scheduled runs, always build
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "Non-scheduled run - building"
+            exit 0
+          fi
+
+          # Get Base image
+          BASE_IMAGE=$(grep ^FROM Containerfile | tail -1 | awk '{sub(/:.*/, "", $2); print $2}')
+          BASE_TAG=$(grep ^FROM Containerfile | tail -1 | awk '{match($2, /:(.*)$/, arr); if (length(arr) > 1) {print arr[1]} else {print "latest"}}')
+          
+          # Get the digest of the base image
+          # BASE_DIGEST=$(skopeo inspect docker://${{ env.BASE_IMAGE }}:${{ env.BASE_TAG }} --format '{{.Digest}}' 2>/dev/null || echo "")
+          BASE_DIGEST=$(skopeo inspect docker://${BASE_IMAGE}:${BASE_TAG} --format '{{.Digest}}' 2>/dev/null || echo "")
+          
+          if [ -z "$BASE_DIGEST" ]; then
+            echo "Could not fetch base image digest, building anyway"
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "Base image digest: $BASE_DIGEST"
+          
+          # Get our image's base layer digest (stored as label)
+          OUR_BASE_DIGEST=$(skopeo inspect docker://${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}:latest --format '{{index .Labels "org.opencontainers.image.base.digest"}}' 2>/dev/null || echo "")
+          
+          echo "Our recorded base digest: $OUR_BASE_DIGEST"
+          
+          if [ -z "$OUR_BASE_DIGEST" ]; then
+            echo "No previous base digest found, building"
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          elif [ "$BASE_DIGEST" != "$OUR_BASE_DIGEST" ]; then
+            echo "Base image has been updated, building"
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          else
+            echo "Base image unchanged, skipping build"
+            echo "should_build=false" >> $GITHUB_OUTPUT
+          fi
+
   build_push:
+    needs: check-base-image
+    if: needs.check-base-image.outputs.should_build == 'true'
     name: Build and push image
     runs-on: ubuntu-24.04
 
@@ -73,6 +124,12 @@ jobs:
           # https://linux.die.net/man/1/date
           echo "date=$(date -u +%Y\-%m\-%d\T%H\:%M\:%S\Z)" >> $GITHUB_OUTPUT
 
+      - name: Get base image digest
+        id: base-digest
+        run: |
+          BASE_DIGEST=$(skopeo inspect docker://${{ env.BASE_IMAGE }}:${{ env.BASE_TAG }} --format '{{.Digest}}')
+          echo "digest=$BASE_DIGEST" >> $GITHUB_OUTPUT
+
       # Image metadata for https://artifacthub.io/ - This is optional but is highly recommended so we all can get a index of all the custom images
       # The metadata by itself is not going to do anything, you choose if you want your image to be on ArtifactHub or not.
       - name: Image Metadata
@@ -89,6 +146,7 @@ jobs:
             type=ref,event=pr
           labels: |
             io.artifacthub.package.readme-url=https://raw.githubusercontent.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/${{ github.sha }}/README.md
+            org.opencontainers.image.base.digest=${{ steps.base-digest.outputs.digest }}
             org.opencontainers.image.created=${{ steps.date.outputs.date }}
             org.opencontainers.image.description=${{ env.IMAGE_DESC }}
             org.opencontainers.image.documentation=https://raw.githubusercontent.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/${{ github.sha }}/README.md
