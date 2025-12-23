@@ -50,6 +50,7 @@ jobs:
           echo "Base image digest: $BASE_DIGEST"
           
           # Get our image's base layer digest (stored as label)
+          echo skopeo inspect docker://${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}:latest --format '{{index .Labels "org.opencontainers.image.base.digest"}}'
           OUR_BASE_DIGEST=$(skopeo inspect docker://${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}:latest --format '{{index .Labels "org.opencontainers.image.base.digest"}}' 2>/dev/null || echo "")
           
           echo "Our recorded base digest: $OUR_BASE_DIGEST"
